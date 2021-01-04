@@ -45,7 +45,7 @@
 
 #define MAX_RETRIES 3
 
-#define MAX_WTX_ROUNDS 100
+#define MAX_WTX_ROUNDS 200
 
 #define WTX_MAX_VALUE 1
 
@@ -716,7 +716,7 @@ t1_transceive(struct t1_state *t1, const void *snd_buf,
         {
             /*Request Soft RESET to the secure element*/
             r = t1_reset(t1);
-            if (r < 0) n = 0xDEAD; /*Fatal error meaning eSE is not responding to reset*/
+            if (r < 0) n = -0xDEAD; /*Fatal error meaning eSE is not responding to reset*/
         }
     }
     return n;

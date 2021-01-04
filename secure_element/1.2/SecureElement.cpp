@@ -32,7 +32,7 @@
 namespace android {
 namespace hardware {
 namespace secure_element {
-namespace V1_0 {
+namespace V1_2 {
 namespace implementation {
 
 #ifndef MAX_CHANNELS
@@ -49,11 +49,18 @@ namespace implementation {
 
 static struct se_gto_ctx *ctx;
 
-SecureElement::SecureElement(){
+SecureElement::SecureElement(const char* ese_name){
     nbrOpenChannel = 0;
+    ctx = NULL;
+
+    if (strcmp(ese_name, "eSE2") == 0) {
+        strcpy( config_filename, "/vendor/etc/libse-gto-hal2.conf");
+    } else {
+        strcpy( config_filename, "/vendor/etc/libse-gto-hal.conf");
+    }
 }
 
-void SecureElement::resetSE(){
+int SecureElement::resetSE(){
     int n;
 
     isBasicChannelOpen = false;
@@ -68,9 +75,12 @@ void SecureElement::resetSE(){
     } else {
         ALOGE("SecureElement:%s Failed to reset and get ATR: %s\n", __func__, strerror(errno));
     }
+
+    return n;
 }
 
 sp<V1_0::ISecureElementHalCallback> SecureElement::internalClientCallback = nullptr;
+sp<V1_1::ISecureElementHalCallback> SecureElement::internalClientCallback_v1_1 = nullptr;
 int SecureElement::initializeSE() {
 
     //struct settings *settings;
@@ -85,7 +95,7 @@ int SecureElement::initializeSE() {
     }
     //settings = default_settings(ctx);
     se_gto_set_log_level(ctx, 4);
-    
+
     openConfigFile(1);
 
     if (se_gto_open(ctx) < 0) {
@@ -93,19 +103,23 @@ int SecureElement::initializeSE() {
         return EXIT_FAILURE;
     }
 
-    resetSE();
+    if (resetSE() < 0) {
+        return EXIT_FAILURE;
+    }
 
     checkSeUp = true;
     turnOffSE = false;
 
-    internalClientCallback->onStateChange(true);
+
+    if(internalClientCallback_v1_1 != nullptr) internalClientCallback_v1_1->onStateChange_1_1(true, "SE Initialized");
+    else internalClientCallback->onStateChange(true);
+
     turnOffSE = true;
 
     ALOGD("SecureElement:%s end", __func__);
     return EXIT_SUCCESS;
 }
 
-// Methods from ::android::hardware::secure_element::V1_0::ISecureElement follow.
 Return<void> SecureElement::init(const sp<::android::hardware::secure_element::V1_0::ISecureElementHalCallback>& clientCallback) {
 
     ALOGD("SecureElement:%s start", __func__);
@@ -114,6 +128,7 @@ Return<void> SecureElement::init(const sp<::android::hardware::secure_element::V
         return Void();
     } else {
         internalClientCallback = clientCallback;
+        internalClientCallback_v1_1 = nullptr;
         if (!internalClientCallback->linkToDeath(this, 0)) {
             ALOGE("SecureElement:%s: linkToDeath Failed", __func__);
         }
@@ -122,7 +137,33 @@ Return<void> SecureElement::init(const sp<::android::hardware::secure_element::V
     if (initializeSE() != EXIT_SUCCESS) {
         ALOGE("SecureElement:%s initializeSE Failed", __func__);
         clientCallback->onStateChange(false);
+    }
+
+    if (deinitializeSE() != SecureElementStatus::SUCCESS) {
+        ALOGE("SecureElement:%s deinitializeSE Failed", __func__);
+    }
+    ALOGD("SecureElement:%s end", __func__);
+
+    return Void();
+}
+
+Return<void> SecureElement::init_1_1(const sp<::android::hardware::secure_element::V1_1::ISecureElementHalCallback>& clientCallback) {
+
+    ALOGD("SecureElement:%s start", __func__);
+    if (clientCallback == nullptr) {
+        ALOGD("SecureElement:%s clientCallback == nullptr", __func__);
         return Void();
+    } else {
+        internalClientCallback = nullptr;
+        internalClientCallback_v1_1 = clientCallback;
+        if (!internalClientCallback_v1_1->linkToDeath(this, 0)) {
+            ALOGE("SecureElement:%s: linkToDeath Failed", __func__);
+        }
+    }
+
+    if (initializeSE() != EXIT_SUCCESS) {
+        ALOGE("SecureElement:%s initializeSE Failed", __func__);
+        clientCallback->onStateChange_1_1(false, "initializeSE Failed");
     }
 
     if (deinitializeSE() != SecureElementStatus::SUCCESS) {
@@ -135,6 +176,7 @@ Return<void> SecureElement::init(const sp<::android::hardware::secure_element::V
 
 Return<void> SecureElement::getAtr(getAtr_cb _hidl_cb) {
     hidl_vec<uint8_t> response;
+    response.resize(atr_size);
     memcpy(&response[0], atr, atr_size);
     _hidl_cb(response);
     return Void();
@@ -178,8 +220,8 @@ Return<void> SecureElement::transmit(const hidl_vec<uint8_t>& data, transmit_cb 
         ALOGE("SecureElement:%s: transmit failed! No channel is open", __func__);
     }
     _hidl_cb(result);
-    free(apdu);
-    free(resp);
+    if(apdu) free(apdu);
+    if(resp) free(resp);
     return Void();
 }
 
@@ -234,8 +276,8 @@ Return<void> SecureElement::openLogicalChannel(const hidl_vec<uint8_t>& aid, uin
         }
         mSecureElementStatus = SecureElementStatus::IOERROR;
         ALOGD("SecureElement:%s Free memory after manage channel after ERROR", __func__);
-        free(apdu);
-        free(resp);
+        if(apdu) free(apdu);
+        if(resp) free(resp);
         _hidl_cb(resApduBuff, mSecureElementStatus);
         return Void();
     } else if (resp[resp_len - 2] == 0x90 && resp[resp_len - 1] == 0x00) {
@@ -251,14 +293,14 @@ Return<void> SecureElement::openLogicalChannel(const hidl_vec<uint8_t>& aid, uin
             mSecureElementStatus = SecureElementStatus::IOERROR;
         }
         ALOGD("SecureElement:%s Free memory after manage channel after ERROR", __func__);
-        free(apdu);
-        free(resp);
+        if(apdu) free(apdu);
+        if(resp) free(resp);
         _hidl_cb(resApduBuff, mSecureElementStatus);
         return Void();
     }
 
-    free(apdu);
-    free(resp);
+    if(apdu) free(apdu);
+    if(resp) free(resp);
     ALOGD("SecureElement:%s Free memory after manage channel", __func__);
     ALOGD("SecureElement:%s mSecureElementStatus = %d", __func__, (int)mSecureElementStatus);
 
@@ -326,8 +368,8 @@ Return<void> SecureElement::openLogicalChannel(const hidl_vec<uint8_t>& aid, uin
     _hidl_cb(resApduBuff, mSecureElementStatus);
 
     ALOGD("SecureElement:%s Free memory after selectApdu", __func__);
-    free(apdu);
-    free(resp);
+    if(apdu) free(apdu);
+    if(resp) free(resp);
     return Void();
 }
 
@@ -402,8 +444,8 @@ Return<void> SecureElement::openBasicChannel(const hidl_vec<uint8_t>& aid, uint8
     _hidl_cb(result, mSecureElementStatus);
 
     ALOGD("SecureElement:%s Free memory after openBasicChannel", __func__);
-    free(apdu);
-    free(resp);
+    if(apdu) free(apdu);
+    if(resp) free(resp);
     return Void();
 }
 
@@ -450,8 +492,8 @@ Return<::android::hardware::secure_element::V1_0::SecureElementStatus> SecureEle
         } else {
             mSecureElementStatus = SecureElementStatus::FAILED;
         }
-        free(apdu);
-        free(resp);
+        if(apdu) free(apdu);
+        if(resp) free(resp);
     }
 
     if (nbrOpenChannel == 0 && isBasicChannelOpen == false) {
@@ -470,24 +512,30 @@ SecureElement::dump_bytes(const char *pf, char sep, const uint8_t *p, int n, FIL
     const uint8_t *s = p;
     char *msg;
     int len = 0;
-	int input_len = n;
+    int input_len = n;
 
-    msg = (char*) malloc ( 100000 * sizeof(char));
+    msg = (char*) malloc ( (pf ? strlen(pf) : 0) + input_len * 3 + 1);
+    if(!msg) {
+        errno = ENOMEM;
+        return;
+    }
 
     if (pf) {
         len += sprintf(msg , "%s" , pf);
         //len = len + 8;
     }
-    while (n--) {
+    while (input_len--) {
         len += sprintf(msg + len, "%02X" , *s++);
         //len = len + 2;
-        if (n && sep) {
+        if (input_len && sep) {
             len += sprintf(msg + len, ":");
             //len++;
         }
     }
     sprintf(msg + len, "\n");
-    ALOGD("SecureElement:%s ==> size = %d data = %s", __func__, input_len, msg);
+    ALOGD("SecureElement:%s ==> size = %d data = %s", __func__, n, msg);
+
+    if(msg) free(msg);
 }
 
 int
@@ -570,24 +618,24 @@ SecureElement::openConfigFile(int verbose)
 {
     int   r;
     FILE *f;
-    char filename[] = "/vendor/etc/libse-gto-hal.conf";
+
 
     /* filename is not NULL */
-    ALOGD("SecureElement:%s Open Config file : %s", __func__, filename);
-    f = fopen(filename, "r");
+    ALOGD("SecureElement:%s Open Config file : %s", __func__, config_filename);
+    f = fopen(config_filename, "r");
     if (f) {
         r = parseConfigFile(f, verbose);
         if (r == -1) {
-            perror(filename);
-            ALOGE("SecureElement:%s Error parse %s Failed", __func__, filename);
+            perror(config_filename);
+            ALOGE("SecureElement:%s Error parse %s Failed", __func__, config_filename);
         }
         if (fclose(f) != 0) {
             r = -1;
-            ALOGE("SecureElement:%s Error close %s Failed", __func__, filename);
+            ALOGE("SecureElement:%s Error close %s Failed", __func__, config_filename);
         }
     } else {
         r = -1;
-        ALOGE("SecureElement:%s Error open %s Failed", __func__, filename);
+        ALOGE("SecureElement:%s Error open %s Failed", __func__, config_filename);
     }
     return r;
 }
@@ -600,6 +648,11 @@ void SecureElement::serviceDied(uint64_t, const wp<IBase>&) {
   }
   if (internalClientCallback != nullptr) {
     internalClientCallback->unlinkToDeath(this);
+    internalClientCallback = nullptr;
+  }
+  if (internalClientCallback_v1_1 != nullptr) {
+    internalClientCallback_v1_1->unlinkToDeath(this);
+    internalClientCallback_v1_1 = nullptr;
   }
 }
 
@@ -613,11 +666,13 @@ SecureElement::deinitializeSE() {
         if (se_gto_close(ctx) < 0) {
             mSecureElementStatus = SecureElementStatus::FAILED;
         } else {
+            ctx = NULL;
             mSecureElementStatus = SecureElementStatus::SUCCESS;
             isBasicChannelOpen = false;
             nbrOpenChannel = 0;
         }
         checkSeUp = false;
+        turnOffSE = false;
     }else{
         ALOGD("SecureElement:%s No need to deinitialize SE", __func__);
         mSecureElementStatus = SecureElementStatus::SUCCESS;
@@ -627,6 +682,31 @@ SecureElement::deinitializeSE() {
     return mSecureElementStatus;
 }
 
+Return<::android::hardware::secure_element::V1_0::SecureElementStatus>
+SecureElement::reset() {
+
+    SecureElementStatus status = SecureElementStatus::FAILED;
+
+    ALOGD("SecureElement:%s start", __func__);
+    if (deinitializeSE() != SecureElementStatus::SUCCESS) {
+        ALOGE("SecureElement:%s deinitializeSE Failed", __func__);
+    }
+
+    if(internalClientCallback_v1_1 != nullptr) {
+        internalClientCallback_v1_1->onStateChange_1_1(false, "SE deinitialized");
+    } else {
+        internalClientCallback->onStateChange(false);
+    }
+
+    if(initializeSE() == EXIT_SUCCESS) {
+        status = SecureElementStatus::SUCCESS;
+    }
+
+    ALOGD("SecureElement:%s end", __func__);
+
+    return status;
+}
+
 // Methods from ::android::hidl::base::V1_0::IBase follow.
 
 //ISecureElement* HIDL_FETCH_ISecureElement(const char* /* name */) {
@@ -634,7 +714,7 @@ SecureElement::deinitializeSE() {
 //}
 //
 }  // namespace implementation
-}  // namespace V1_0
+}  // namespace V1_2
 }  // namespace secure_element
 }  // namespace hardware
 }  // namespace android
